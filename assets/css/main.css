@@ -116,6 +116,7 @@
 
 .header__qr-img {
     width: 100%;
+    cursor: default;
 }
 
 .header__qr-download {
