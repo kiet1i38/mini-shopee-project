@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Interactive Night Sky with Constellations</title>
+    <style>
+      body {
+        margin: 0;
+        overflow: hidden; /* Prevent scrollbars */
+        background-color: #000;
+        color: #fff;
+        font-family: sans-serif;
+      }
+
+      #sky-container {
+        position: fixed; /* Use fixed to ensure it covers viewport */
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+      }
+
+      canvas {
+        display: block; /* Remove annoying space below canvas */
+      }
+
+      #labels-container {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none; /* Allow clicks to pass through to the canvas */
+        overflow: hidden; /* Hide labels that go off-screen */
+        color: #eee;
+      }
+
+      .label {
+        position: absolute;
+        background-color: rgba(0, 0, 0, 0.6);
+        padding: 3px 7px;
+        border-radius: 4px;
+        font-size: 12px;
+        white-space: nowrap;
+        transform: translate(-50%, -50%); /* Center label on its coordinate */
+        text-shadow: 1px 1px 2px black;
+        display: none; /* Hidden by default, shown by JS */
+      }
+
+      #info {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        background-color: rgba(0, 0, 0, 0.5);
+        padding: 8px;
+        border-radius: 5px;
+        font-size: 0.9em;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="sky-container">
+      <!-- Canvas will be inserted here by Three.js -->
+    </div>
+    <div id="labels-container">
+      <!-- Labels will be added here by JavaScript -->
+    </div>
+    <div id="info">Drag to rotate, Scroll to zoom</div>
+
+    <!-- Three.js Library (using cdnjs) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.164.1/three.min.js"></script>
+    <!-- OrbitControls for interaction (using cdnjs non-module version) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.164.1/controls/OrbitControls.js"></script>
+
+    <script>
+      // NOTE: No 'type="module"' needed for this script tag
+
+      // --- Scene Setup ---
+      const scene = new THREE.Scene();
+      const container = document.getElementById("sky-container");
+      const labelsContainer = document.getElementById("labels-container");
+
+      // --- Camera ---
+      const camera = new THREE.PerspectiveCamera(
+        75, // Field of View
+        window.innerWidth / window.innerHeight, // Aspect Ratio
+        0.1, // Near clipping plane
+        2000 // Far clipping plane
+      );
+      camera.position.z = 5; // Start slightly back
+
+      // --- Renderer ---
+      const renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setPixelRatio(window.devicePixelRatio); // Adjust for high-DPI screens
+      container.appendChild(renderer.domElement);
+
+      // --- Controls ---
+      // OrbitControls (non-module version) automatically attaches to THREE.OrbitControls
+      const controls = new THREE.OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true; // Smoother movement
+      controls.dampingFactor = 0.05;
+      controls.screenSpacePanning = false; // Keep panning relative to origin
+      controls.minDistance = 1; // Don't zoom inside the origin
+      controls.maxDistance = 1000; // Limit zoom out
+      controls.enablePan = false; // Disable panning for a sky view
+      controls.rotateSpeed = 0.3; // Slow down rotation slightly
+
+      // --- Lighting (Ambient is enough for basic points/lines) ---
+      const ambientLight = new THREE.AmbientLight(0x404040); // Soft white light
+      scene.add(ambientLight);
+
+      // --- Sky Sphere ---
+      const skyRadius = 1000;
+      const starTexture = createStarfieldTexture(); // Use a generated texture
+      const skyGeometry = new THREE.SphereGeometry(skyRadius, 64, 32); // Radius, width segments, height segments
+      const skyMaterial = new THREE.MeshBasicMaterial({
+        map: starTexture,
+        side: THREE.BackSide, // Render material on the inside
+      });
+      const skySphere = new THREE.Mesh(skyGeometry, skyMaterial);
+      scene.add(skySphere);
+
+      // --- Constellation Data ---
+      const constellationRadius = 800; // Place constellations inside the sky sphere
+
+      function toCartesian(radius, phi, theta) {
+        const x = radius * Math.sin(phi) * Math.sin(theta);
+        const y = radius * Math.cos(phi);
+        const z = radius * Math.sin(phi) * Math.cos(theta);
+        return new THREE.Vector3(x, y, z);
+      }
+
+      // Data structure: { name, labelPos: [phi, theta], stars: [[phi, theta], ...], lines: [[idx1, idx2], ...] }
+      const constellationData = [
+        {
+          name: "Ursa Major (Big Dipper)",
+          labelPos: [0.8, 4.7],
+          stars: [
+            [0.7, 4.5], [0.75, 4.6], [0.8, 4.7], [0.9, 4.8], // Handle
+            [0.85, 5.0], [0.75, 5.1], [0.7, 4.9], // Bowl
+          ],
+          lines: [ [0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 6], [6, 4] ],
+        },
+        {
+          name: "Ursa Minor (Little Dipper)",
+          labelPos: [0.3, 4.7],
+          stars: [
+            [0.1, 4.7], [0.2, 4.6], [0.3, 4.7], [0.4, 4.8], // Polaris area + handle
+            [0.35, 5.0], [0.25, 5.1], [0.2, 4.9], // Bowl
+          ],
+          lines: [ [0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 6], [6, 3] ],
+        },
+        {
+          name: "Cassiopeia",
+          labelPos: [0.7, 0.5],
+          stars: [ [0.6, 0.3], [0.7, 0.4], [0.8, 0.5], [0.75, 0.65], [0.65, 0.7] ],
+          lines: [ [0, 1], [1, 2], [2, 3], [3, 4] ],
+        },
+        {
+          name: "Orion",
+          labelPos: [1.7, 1.5],
+          stars: [
+            [1.5, 1.3], [1.55, 1.7], // Shoulders (Betelgeuse, Bellatrix)
+            [1.7, 1.4], [1.72, 1.5], [1.74, 1.6], // Belt
+            [1.9, 1.35], [1.95, 1.65], // Feet (Saiph, Rigel)
+            [1.75, 1.45], [1.8, 1.5], // Sword area (simplified)
+          ],
+          lines: [
+            [0, 2], [0, 3], [0, 4], [1, 2], [1, 3], [1, 4], // Belt to shoulders
+            [2, 5], [3, 5], [3, 6], [4, 6], // Belt to feet
+            [0, 1], [5, 6], // Connect shoulders, connect feet
+            [3, 7], [7, 8] // Sword
+          ],
+        },
+        {
+          name: "Canis Major",
+          labelPos: [2.0, 1.8],
+          stars: [
+            [1.9, 1.7], [2.0, 1.8], [2.1, 1.9], [2.2, 1.75], // Body + Sirius
+            [2.3, 1.85], [2.35, 2.0], // Hind legs/tail
+          ],
+          lines: [ [0, 1], [1, 2], [1, 3], [3, 4], [4, 5], [2, 3] ],
+        },
+        {
+          name: "Taurus",
+          labelPos: [1.4, 1.0],
+          stars: [
+            [1.3, 0.9], [1.4, 1.0], [1.5, 1.1], [1.45, 0.85], // Hyades V shape (Aldebaran near center)
+            [1.2, 0.7], [1.6, 1.2], // Horns
+          ],
+          lines: [ [0, 1], [1, 2], [1, 3], [0, 3], [1, 4], [1, 5] ],
+        },
+        {
+          name: "Leo",
+          labelPos: [1.4, 3.0],
+          stars: [
+            [1.2, 2.8], [1.3, 2.9], [1.4, 3.0], [1.5, 2.95], [1.45, 2.85], [1.35, 2.75], // Sickle (Head)
+            [1.6, 3.1], [1.7, 3.3], // Body + Tail (Regulus, Denebola)
+          ],
+          lines: [ [0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 0], [3, 6], [6, 7] ],
+        },
+        {
+          name: "Cygnus (Northern Cross)",
+          labelPos: [0.9, 6.0],
+          stars: [
+            [0.8, 6.0], [0.9, 6.0], [1.0, 6.0], [1.1, 6.0], // Main axis (Deneb at top)
+            [0.9, 5.8], [0.9, 6.2], // Cross arms (wings)
+          ],
+          lines: [ [0, 1], [1, 2], [2, 3], [1, 4], [1, 5] ],
+        },
+        {
+          name: "Lyra",
+          labelPos: [1.0, 5.5],
+          stars: [ [0.9, 5.4], [1.0, 5.5], [1.1, 5.45], [1.05, 5.55], [0.95, 5.58] ], // Vega + parallelogram
+          lines: [ [1, 0], [1, 2], [0, 4], [2, 3], [3, 4] ],
+        },
+        {
+          name: "Aquila",
+          labelPos: [1.6, 5.8],
+          stars: [ [1.5, 5.7], [1.6, 5.8], [1.7, 5.9], [1.65, 6.0], [1.55, 6.1] ], // Altair + flanking stars + tail
+          lines: [ [0, 1], [1, 2], [1, 3], [3, 4] ],
+        },
+        {
+          name: "Scorpius",
+          labelPos: [2.3, 4.5],
+          stars: [
+            [2.1, 4.3], [2.2, 4.4], [2.3, 4.5], // Claws + Antares
+            [2.4, 4.6], [2.5, 4.7], [2.6, 4.6], [2.7, 4.5], [2.8, 4.6], // Body + Tail
+          ],
+          lines: [ [0, 2], [1, 2], [2, 3], [3, 4], [4, 5], [5, 6], [6, 7] ],
+        },
+        {
+          name: "Sagittarius (Teapot)",
+          labelPos: [2.5, 5.2],
+          stars: [
+            [2.4, 5.0], [2.5, 5.1], [2.6, 5.2], [2.7, 5.15], // Lid
+            [2.45, 5.3], [2.55, 5.4], [2.65, 5.35], // Body
+            [2.75, 5.25], // Handle
+          ],
+          lines: [ [0, 1], [1, 2], [2, 3], [0, 4], [1, 4], [4, 5], [5, 6], [2, 6], [3, 7], [6, 7] ],
+        },
+        {
+          name: "Pegasus (Great Square)",
+          labelPos: [1.3, 0.2],
+          stars: [ [1.2, 0.1], [1.4, 0.1], [1.4, 0.3], [1.2, 0.3] ], // The square
+          lines: [ [0, 1], [1, 2], [2, 3], [3, 0] ],
+        },
+        {
+          name: "Andromeda",
+          labelPos: [1.0, 0.3],
+          stars: [
+            [1.2, 0.3], [1.0, 0.3], [0.8, 0.3], [0.6, 0.3] // Connects to Pegasus + line of stars
+          ],
+          lines: [ [0, 1], [1, 2], [2, 3] ], // Star 0 is shared with Pegasus[3]
+        },
+        {
+          name: "Gemini",
+          labelPos: [1.1, 2.0],
+          stars: [ [1.0, 1.9], [1.2, 1.9], // Heads (Castor, Pollux)
+                   [1.1, 2.1], [1.3, 2.1], // Bodies
+                   [1.05, 2.3], [1.25, 2.3] ], // Feet
+          lines: [ [0, 2], [2, 4], [1, 3], [3, 5], [2,3] ], // Connect heads to bodies, bodies to feet
+        },
+        {
+          name: "Virgo",
+          labelPos: [1.8, 3.7],
+          stars: [ [1.7, 3.5], [1.8, 3.7], [1.9, 3.9], [2.0, 3.6], [2.1, 3.8] ], // Spica + simplified body
+          lines: [ [0, 1], [1, 2], [1, 3], [3, 4] ],
+        },
+        {
+          name: "Bootes",
+          labelPos: [1.1, 4.2],
+          stars: [ [0.9, 4.0], [1.0, 4.1], [1.1, 4.2], [1.2, 4.1], [1.3, 4.0], // Kite shape (Arcturus at bottom)
+                   [1.1, 4.4] ], // Top
+          lines: [ [0, 1], [1, 2], [2, 3], [3, 4], [4, 0], [2, 5] ],
+        },
+        {
+          name: "Hercules",
+          labelPos: [1.0, 4.8],
+          stars: [ [0.9, 4.7], [1.1, 4.7], [1.1, 4.9], [0.9, 4.9], // Keystone asterism
+                   [0.8, 4.6], [1.2, 4.6], [0.8, 5.0], [1.2, 5.0] ], // Legs/Arms
+          lines: [ [0, 1], [1, 2], [2, 3], [3, 0], [0, 4], [1, 5], [3, 6], [2, 7] ],
+        },
+        {
+          name: "Draco", // Dragon - winds between bears
+          labelPos: [0.5, 3.0], // Approximate center of the winding shape
+          stars: [ [0.6, 1.5], [0.7, 1.8], [0.6, 2.2], [0.5, 2.6], [0.4, 3.0], [0.5, 3.4], [0.6, 3.8], [0.7, 4.2], // Body
+                   [0.3, 2.9], [0.35, 3.1], [0.45, 3.15], [0.5, 2.95] ], // Head
+          lines: [ [0,1],[1,2],[2,3],[3,4],[4,5],[5,6],[6,7], [4,8],[8,9],[9,10],[10,11],[11,8] ],
+        },
+        {
+          name: "Cepheus", // House shape near Cassiopeia/Draco
+          labelPos: [0.4, 0.2],
+          stars: [ [0.3, 0.1], [0.5, 0.1], [0.6, 0.3], [0.4, 0.4], [0.2, 0.3] ],
+          lines: [ [0,1],[1,2],[2,3],[3,4],[4,0],[1,3] ], // House + diagonal
+        },
+      ];
+
+      // --- Create Constellation Objects ---
+      const constellationObjects = []; // To store refs to labels and positions
+
+      const starMaterial = new THREE.PointsMaterial({
+        color: 0xffffff,
+        size: 3,
+        sizeAttenuation: false, // Keep size constant regardless of distance
+      });
+
+      const lineMaterial = new THREE.LineBasicMaterial({
+        color: 0xaaaaaa, // Light grey for lines
+        transparent: true,
+        opacity: 0.5,
+      });
+
+      constellationData.forEach((constellation) => {
+        const starPositions = [];
+        const lineVertices = [];
+        const labelPosition3D = toCartesian(
+          constellationRadius * 1.1, // Place label slightly outside stars
+          constellation.labelPos[0],
+          constellation.labelPos[1]
+        );
+
+        constellation.stars.forEach((starCoords) => {
+          const pos = toCartesian(
+            constellationRadius,
+            starCoords[0],
+            starCoords[1]
+          );
+          starPositions.push(pos.x, pos.y, pos.z);
+        });
+
+        constellation.lines.forEach((lineIndices) => {
+          const startIndex = lineIndices[0] * 3;
+          const endIndex = lineIndices[1] * 3;
+          // Add start point
+          lineVertices.push(
+            starPositions[startIndex],
+            starPositions[startIndex + 1],
+            starPositions[startIndex + 2]
+          );
+          // Add end point
+          lineVertices.push(
+            starPositions[endIndex],
+            starPositions[endIndex + 1],
+            starPositions[endIndex + 2]
+          );
+        });
+
+        // Create stars (Points)
+        const starGeometry = new THREE.BufferGeometry();
+        starGeometry.setAttribute(
+          "position",
+          new THREE.Float32BufferAttribute(starPositions, 3)
+        );
+        const stars = new THREE.Points(starGeometry, starMaterial);
+        scene.add(stars);
+
+        // Create lines (LineSegments)
+        const lineGeometry = new THREE.BufferGeometry();
+        lineGeometry.setAttribute(
+          "position",
+          new THREE.Float32BufferAttribute(lineVertices, 3)
+        );
+        const lines = new THREE.LineSegments(lineGeometry, lineMaterial);
+        scene.add(lines);
+
+        // Create HTML Label
+        const labelDiv = document.createElement("div");
+        labelDiv.className = "label";
+        labelDiv.textContent = constellation.name;
+        labelsContainer.appendChild(labelDiv);
+
+        // Store label and its 3D position for updating
+        constellationObjects.push({
+          labelElement: labelDiv,
+          position3D: labelPosition3D,
+        });
+      });
+
+      // --- Label Update Logic ---
+      function updateLabels() {
+        constellationObjects.forEach((obj) => {
+          const label = obj.labelElement;
+          const position3D = obj.position3D;
+
+          // Project 3D position to 2D screen coordinates
+          const vector = position3D.clone().project(camera);
+
+          // Check if the label is behind the camera or too far left/right/top/bottom
+          const isInView =
+            vector.z > -1 && // Check if in front of near plane (projected z is -1 to 1)
+            vector.z < 1 && // Check if behind far plane (less critical for labels)
+            vector.x >= -1 && vector.x <= 1 &&
+            vector.y >= -1 && vector.y <= 1;
+
+
+          if (isInView) {
+            // Convert normalized device coordinates (-1 to +1) to CSS pixels
+            const x = (vector.x * 0.5 + 0.5) * window.innerWidth;
+            const y = (-vector.y * 0.5 + 0.5) * window.innerHeight; // Y is inverted
+
+            label.style.left = `${x}px`;
+            label.style.top = `${y}px`;
+            label.style.display = 'block'; // Show label
+          } else {
+            label.style.display = 'none'; // Hide label
+          }
+        });
+      }
+
+      // --- Starfield Texture Generation ---
+      function createStarfieldTexture() {
+        const canvas = document.createElement("canvas");
+        const size = 1024; // Texture size
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext("2d");
+
+        ctx.fillStyle = "black";
+        ctx.fillRect(0, 0, size, size);
+
+        ctx.fillStyle = "white";
+        for (let i = 0; i < 2000; i++) { // Number of stars
+          const x = Math.random() * size;
+          const y = Math.random() * size;
+          const radius = Math.random() * 1.2; // Star size
+          ctx.beginPath();
+          ctx.arc(x, y, radius, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        const texture = new THREE.CanvasTexture(canvas);
+        texture.needsUpdate = true;
+        return texture;
+      }
+
+
+      // --- Handle Window Resize ---
+      function onWindowResize() {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        // No need to update labels here, animate loop handles it
+      }
+      window.addEventListener("resize", onWindowResize);
+
+      // --- Animation Loop ---
+      function animate() {
+        requestAnimationFrame(animate);
+
+        controls.update(); // Required if enableDamping is true
+        updateLabels(); // Update label positions each frame
+        renderer.render(scene, camera);
+      }
+
+      // --- Start Animation ---
+      animate();
+    </script>
+  </body>
+</html>
